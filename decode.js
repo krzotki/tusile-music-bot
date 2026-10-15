@@ -11,9 +11,8 @@
  * one sample, and neither needs a subprocess to catch.
  */
 
-import { lookup as dnsLookup } from 'node:dns/promises';
+import { openAudioStream } from './stream.js';
 
-import { resolveFinalUrl } from './addresses.js';
 
 /** LiveKit's side of the deal. Matches what the Tusile voice stack uses everywhere. */
 const SAMPLE_RATE = 48000;
@@ -25,30 +24,21 @@ const FRAME_BYTES = FRAME_SAMPLES * 2;
 /**
  * The ffmpeg command line.
  *
- * `-nostdin` because ffmpeg inherits our stdin otherwise and will happily eat a keystroke
- * meant for the terminal, and because without it a container with no tty can hang.
- * `-reconnect` because these are plain HTTP urls on somebody else's CDN: a dropped
- * connection a minute into a track used to end it, and ffmpeg can pick it up again from
- * where it was. `-vn` because an MP3 with album art is a video stream as far as ffmpeg is
- * concerned, and it will otherwise try to give us one.
+ * `-nostdin` is gone with the network: stdin is the audio now. What is left is the one
+ * input ffmpeg still has, a pipe, and the format it must produce.
+ *
+ * `-vn` because an MP3 with album art is a video stream as far as ffmpeg is concerned,
+ * and it will otherwise try to give us one. No protocol whitelist, no redirect limit and
+ * no reconnect flags, because ffmpeg no longer opens a connection: stream.js does that,
+ * with the address pinned, and hands over the bytes.
  */
-function ffmpegArgs(url, { seekMs = 0 } = {}) {
-  const args = ['-nostdin', '-loglevel', 'error'];
-  // ffmpeg speaks far more than HTTP. `-i` also accepts file:, concat:, data:, subfile:
-  // and a few dozen others, and the url handed to it came from a third party index
-  // describing files uploaded by strangers. Without this, a result whose url is
-  // `file:///etc/passwd` is a bot reading a file off its host and playing it as noise into
-  // a voice channel, and `concat:` is the same trick with a playlist. search.js refuses
-  // anything that is not http, and this is the gate that still holds when somebody
-  // replaces search.js with their own, which the README invites them to do.
-  args.push('-protocol_whitelist', 'http,https,tcp,tls,crypto');
-  // And it follows none. Every hop was walked and judged before we got here; letting
-  // ffmpeg take one more would be the one nobody looked at, which is exactly how a url on
-  // an ordinary public host reaches a metadata endpoint.
-  args.push('-max_redirects', '0');
-  args.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
+function ffmpegArgs({ seekMs = 0 } = {}) {
+  const args = ['-loglevel', 'error'];
   if (seekMs > 0) args.push('-ss', (seekMs / 1000).toFixed(3));
-  args.push('-i', url);
+  // The audio arrives on stdin. ffmpeg probes the pipe for the format, which it manages
+  // for everything Openverse serves; what it cannot do from a pipe is seek backwards, and
+  // nothing here ever asks it to.
+  args.push('-i', 'pipe:0');
   args.push('-vn');
   args.push('-ac', String(CHANNELS));
   args.push('-ar', String(SAMPLE_RATE));
@@ -96,36 +86,34 @@ function cutFrames(buffer) {
  * Killing ffmpeg on the way out is in a finally, because a generator abandoned mid track
  * still has to not leave a process behind.
  */
-async function* decode(url, { spawn, seekMs = 0, onError, lookup = dnsLookup, fetchImpl } = {}) {
-  // The address filter in search.js reads what is written in the url, so it catches
-  // `http://10.0.0.5/` and cannot catch a name that resolves to the same place. This is
-  // the lookup that closes the plain case, and it lives here rather than in search.js
-  // because the README invites people to replace search.js and not this.
+async function* decode(url, { spawn, seekMs = 0, onError, openStream = openAudioStream,
+  lookup, requestImpl } = {}) {
+  // The bytes, fetched here rather than by ffmpeg.
   //
-  // It does not close DNS rebinding: ffmpeg resolves the name again when it connects and
-  // nothing here can make that answer the same one. The honest answer to rebinding is
-  // egress rules on the network the bot runs on, which the README says.
-  // Where this url actually ends, with every redirect judged on the way.
-  //
-  // ffmpeg follows redirects, so validating the url it is handed proves nothing on its
-  // own: an ordinary public host answering 302 to http://169.254.169.254/ is every check
-  // walked past in one hop. The hops are followed here instead and ffmpeg is told to
-  // follow none.
-  //
-  // None of it closes DNS rebinding. ffmpeg resolves the name again when it connects and
-  // nothing in this process can make that answer the same one. The honest answer to
-  // rebinding is egress rules on the network the bot runs on, which the README says.
-  let target;
+  // Every earlier version judged a url and then handed it to ffmpeg, which resolved the
+  // name again when it connected. Between the two lookups the answer can change, which is
+  // DNS rebinding, and nothing on this side could make ffmpeg's answer match ours. Now
+  // there is one lookup, inside the socket that uses it, and ffmpeg reads a pipe.
+  let body;
   try {
-    target = await resolveFinalUrl(url, { lookup, fetchImpl });
+    body = await openStream(url, { lookup, requestImpl });
   } catch (err) {
     if (onError) onError(err);
     return;
   }
 
-  const child = spawn('ffmpeg', ffmpegArgs(target, { seekMs }));
+  const child = spawn('ffmpeg', ffmpegArgs({ seekMs }));
   let stderr = '';
   if (child.stderr) child.stderr.on('data', (d) => { stderr += String(d); });
+
+  // Piped rather than awaited: this has to run while frames are being pulled out the other
+  // end, and both ends are this process. EPIPE is the normal way it finishes when a track
+  // is skipped, so it is swallowed: ffmpeg is already gone and the pipe closing behind it
+  // is not news.
+  if (child.stdin) {
+    child.stdin.on('error', () => {});
+    body.pipe(child.stdin);
+  }
 
   let rest = Buffer.alloc(0);
   try {
@@ -141,6 +129,9 @@ async function* decode(url, { spawn, seekMs = 0, onError, lookup = dnsLookup, fe
       onError(new Error(stderr.trim() || `ffmpeg exited ${child.exitCode}`));
     }
   } finally {
+    // The socket as well as the process. Abandoning the generator mid track is what /skip
+    // does, and a connection left open is a track still being downloaded for nobody.
+    body.destroy?.();
     if (child.exitCode === null) child.kill('SIGKILL');
   }
 }

@@ -50,7 +50,7 @@ class Session {
    * @param {(cmd: string, args: string[]) => object} deps.spawn
    * @param {(track: object) => Promise<void>} [deps.announce] called as each track starts
    */
-  constructor({ server, channelId, log, connect, spawn, announce, lookup, fetchImpl,
+  constructor({ server, channelId, log, connect, spawn, announce, openStream,
     sleep = defaultSleep }) {
     this.server = server;
     this.channelId = channelId;
@@ -59,10 +59,9 @@ class Session {
     this.spawn = spawn;
     this.announce = announce;
     this.sleep = sleep;
-    // Injected only so the tests need no DNS and no network; decode uses the real
-    // resolver and the real fetch otherwise.
-    this.lookup = lookup;
-    this.fetchImpl = fetchImpl;
+    // Injected only so the tests need no network; decode opens the real connection
+    // otherwise.
+    this.openStream = openStream;
     this.maxFrames = MAX_FRAMES;
 
     this.queue = new Queue();
@@ -149,8 +148,7 @@ class Session {
     try {
       for await (const samples of decode(track.url, {
         spawn: this.spawn,
-        ...(this.lookup ? { lookup: this.lookup } : {}),
-        ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+        ...(this.openStream ? { openStream: this.openStream } : {}),
         onError: (err) => this.log(`ffmpeg: ${track.title}: ${err.message}`),
       })) {
         if (this.skipping || this.stopped) break;

@@ -69,6 +69,7 @@ you fork this and take that out, you have made something you are not allowed to 
 |---|---|
 | `search.js` | Openverse. No API key, no account. Swap this file to change where music comes from. |
 | `addresses.js` | Which addresses the bot will be pointed at. Read this before you swap `search.js`. |
+| `stream.js` | Opens the connection with the address pinned, and hands ffmpeg the bytes. |
 | `queue.js` | What is playing and what is next. Pure, so the rules are tested without a network. |
 | `decode.js` | ffmpeg: anything on the internet to the raw samples LiveKit takes. |
 | `player.js` | One voice channel, one room, one queue draining into it. |
@@ -86,6 +87,10 @@ was asked.
 10 ms, so feeding it in a loop plays in real time with no timer anywhere. It also means
 `/skip` is a flag checked once per frame rather than anything to do with cancellation.
 
+**Fetch it yourself if the url is not yours.** A url from a search index is a request made
+from inside your network. Handing it to a tool that resolves the name again is a check you
+cannot enforce; resolving once, inside the socket's own lookup, is one you can.
+
 **Put the microphone down on every path out.** A bot left in a channel showing a live
 microphone and playing nothing is what people report as "the bot is broken". `hangUp` runs
 in a `finally` and swallows its own errors, because it runs after failures at least as
@@ -94,17 +99,22 @@ often as after successes.
 ## If you run this where internal services are reachable
 
 The bot fetches whatever url the search index hands back, which makes every result a
-request made from inside your network. `addresses.js` refuses loopback, link local and
-private ranges, in every encoding the URL parser normalises, including the IPv4 addresses
-that can be carried inside an IPv6 one. `decode.js` resolves the hostname and follows the
-redirects itself, judging every hop the same way, and only then starts ffmpeg, which is
-held to `http` and `https` (`-i` otherwise accepts `file:` and `concat:`) and told to
-follow no redirects of its own.
+request made from inside your network. So the bot does the fetching itself, rather than
+letting ffmpeg do it:
 
-That is the floor, not the answer. ffmpeg resolves the name again when it connects, and
-nothing in this process can make that answer the same one, so DNS rebinding is not closed
-by any of it. If this bot shares a network with anything worth reaching, give it egress
-rules.
+- `addresses.js` refuses loopback, link local and private ranges, in every encoding the
+  URL parser normalises, including the IPv4 addresses that can be carried inside an IPv6
+  one. It refuses credentials in a url, and hands on the parsed form so nothing is parsed
+  twice by two parsers that might disagree.
+- `stream.js` opens the connection with `http.request`, passing its own `lookup`. That is
+  the function the socket uses to turn a name into an address, so refusing inside it means
+  **the address that was checked is the address that is connected to** — there is no second
+  resolution for a rebinding attack to win. Redirects are followed here, each hop judged
+  like the first.
+- ffmpeg reads the bytes off a pipe and never opens a connection at all.
+
+TLS is unaffected: `lookup` decides where the socket goes, and the certificate is still
+checked against the hostname.
 
 ## Tests
 
@@ -112,7 +122,7 @@ rules.
 npm test
 ```
 
-91 of them. All but one need no network and no ffmpeg; that one runs ffmpeg to check it understands the arguments this bot builds, because no test that reads an array of strings can tell a real option from an invented one, and this file shipped one that reads perfectly and does not exist. They also run during `docker build`, so an
+93 of them. All but one need no network and no ffmpeg; that one runs ffmpeg to check it understands the arguments this bot builds, because no test that reads an array of strings can tell a real option from an invented one, and this file shipped one that reads perfectly and does not exist. They also run during `docker build`, so an
 image cannot be built from code that does not pass.
 
 ## Licence

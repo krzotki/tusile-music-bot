@@ -8,14 +8,14 @@
  * strangers does not get to choose which addresses this bot connects to.
  *
  * Its own module because both halves of the bot need it and neither should import the
- * other: search.js judges the url before offering a track, and decode.js checks again, with
- * a name resolution, before starting ffmpeg. The README invites people to replace search.js
- * with their own, and this is what still holds when they do.
+ * other: search.js judges a url before offering a track, and stream.js judges it again,
+ * and judges every address it resolves to, at the moment it opens the connection. The
+ * README invites people to replace search.js with their own, and this is what still holds
+ * when they do.
  *
- * None of this closes DNS rebinding. ffmpeg resolves the name again when it connects, and
- * nothing in this process can make that answer the same one it gave here. A bot on a
- * network with reachable internal services wants egress rules; this is the floor, not the
- * answer.
+ * Only rules here, and no resolution: these answer "would we connect to this", and
+ * stream.js is where the answer is acted on, inside the socket's own lookup, so that the
+ * address checked is the address reached.
  */
 
 /**
@@ -111,69 +111,4 @@ function publicUrl(raw) {
   return url.href;
 }
 
-/**
- * Whether every address a hostname resolves to is one we will connect to.
- *
- * `lookup` is injected so the tests never touch DNS. Every answer has to pass: a name
- * resolving to one public and one private address is the shape of the attack rather than
- * an accident.
- */
-async function resolvesOutside(host, lookup) {
-  const name = String(host || '').replace(/^\[|\]$/g, '');
-  // An address literal has already been judged by isPublicHost, and asking DNS about one
-  // is a round trip to be told what it says on it.
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(name) || name.includes(':')) {
-    return { ok: isPublicHost(name), address: name };
-  }
-  const answers = await lookup(name, { all: true });
-  for (const answer of answers) {
-    if (!isPublicHost(answer.address)) return { ok: false, address: answer.address };
-  }
-  return { ok: true, address: answers[0]?.address };
-}
-
-/**
- * Follow the redirects ourselves, judging every hop, and return where it ends.
- *
- * ffmpeg follows redirects, which made validating the url it was handed prove nothing on
- * its own: a url on a perfectly ordinary public host answering 302 to
- * http://169.254.169.254/ walked past the address rules and the name resolution in one
- * hop. So the hops happen here, each one judged exactly like the first, and ffmpeg is told
- * to follow none.
- *
- * HEAD rather than GET, with the body never read: the question is where this ends, not
- * what is there. Some CDNs refuse HEAD, and a status that is not a redirect ends the walk
- * whatever it is, because deciding whether a 403 is fatal is ffmpeg's job and it is about
- * to have it.
- */
-async function resolveFinalUrl(raw, { fetchImpl = fetch, lookup, maxHops = 5, signal } = {}) {
-  let current = publicUrl(raw);
-  if (current === null) throw new Error(`refused: ${raw}`);
-
-  for (let hop = 0; hop <= maxHops; hop++) {
-    const { ok, address } = await resolvesOutside(new URL(current).hostname, lookup);
-    if (!ok) throw new Error(`${new URL(current).hostname} is not a public address (${address})`);
-
-    let res;
-    try {
-      res = await fetchImpl(current, { method: 'HEAD', redirect: 'manual', signal });
-    } catch {
-      // Unreachable, or a server that will not answer a HEAD. Either way this hop is as
-      // far as we can see, and it is one we have already judged.
-      return current;
-    }
-    if (res.status < 300 || res.status > 399) return current;
-
-    const location = res.headers?.get?.('location');
-    if (!location) return current;
-
-    // Resolved against the url it came from: a bare path is legal and common, and
-    // resolving one against the wrong base is another way to end up somewhere unjudged.
-    const next = publicUrl(new URL(location, current).href);
-    if (next === null) throw new Error(`refused redirect to ${location}`);
-    current = next;
-  }
-  throw new Error(`too many redirects from ${raw}`);
-}
-
-export { isPublicHost, publicUrl, resolvesOutside, resolveFinalUrl };
+export { isPublicHost, publicUrl };

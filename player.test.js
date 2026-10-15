@@ -42,8 +42,11 @@ function harness({ frames = 5, exitCode = 0 } = {}) {
     log: (l) => events.push(`log:${l}`),
     connect: async () => { events.push('connect'); return room; },
     spawn: spawnImpl,
-    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
-    fetchImpl: async () => ({ status: 200, headers: { get: () => null } }),
+    openStream: async () => {
+      const body = Readable.from([Buffer.alloc(0)]);
+      body.pipe = () => body;
+      return body;
+    },
     sleep: async () => {},
   });
   return { session, published, events };
