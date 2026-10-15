@@ -29,8 +29,53 @@ const MAX_DURATION_MS = 20 * 60 * 1000;
  * thing the bot could do with one is fail after announcing it.
  */
 function playable(row) {
-  if (!row || typeof row.url !== 'string' || !row.url.startsWith('http')) return false;
+  if (!row || typeof row.url !== 'string') return false;
+  if (!reachesTheOutsideWorld(row.url)) return false;
   if (typeof row.duration === 'number' && row.duration > MAX_DURATION_MS) return false;
+  return true;
+}
+
+/**
+ * Hosts this bot will not be pointed at.
+ *
+ * A url from the index is a request this bot makes on somebody else's behalf, from inside
+ * wherever it runs. A cloud metadata endpoint, an admin page on localhost, a service on the
+ * private network: ffmpeg would fetch it, find no audio in it and move on, but the request
+ * was still made from behind the firewall. A third party index describing files uploaded by
+ * strangers does not get to choose which addresses this bot connects to.
+ *
+ * Literal addresses only, which is what this can honestly check: a name that resolves to a
+ * private address is not caught here, and the answer to that is the network the bot runs
+ * on, not a DNS lookup in a search filter that the connection would then not use anyway.
+ */
+function reachesTheOutsideWorld(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal')) {
+    return false;
+  }
+  // IPv6 loopback and the v4-mapped forms of everything below it.
+  if (host === '::1' || host.startsWith('::ffff:')) return false;
+  // Unique local and link local addresses.
+  if (/^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host)) return false;
+
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const [a, b] = v4.slice(1).map(Number);
+    if (a === 0 || a === 127 || a === 10) return false;
+    if (a === 169 && b === 254) return false; // link local, and the cloud metadata address
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false; // carrier grade NAT
+    if (a >= 224) return false; // multicast and above
+  }
   return true;
 }
 
@@ -99,4 +144,4 @@ async function search(query, { fetchImpl = fetch, limit = 5, signal } = {}) {
   return rows.filter(playable).slice(0, limit).map(toTrack);
 }
 
-export { search, credit, playable, toTrack, ENDPOINT, MAX_DURATION_MS };
+export { search, credit, playable, toTrack, reachesTheOutsideWorld, ENDPOINT, MAX_DURATION_MS };

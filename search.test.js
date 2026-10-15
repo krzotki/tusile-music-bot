@@ -64,6 +64,40 @@ test('something far too long to queue is dropped', () => {
   assert.equal(playable(row({ duration: MAX_DURATION_MS + 1 })), false);
 });
 
+/**
+ * A url is handed to ffmpeg, which then fetches it from inside wherever this bot runs.
+ *
+ * That makes any url the search index returns a request this bot makes on somebody else's
+ * behalf, from behind whatever firewall it lives behind. A cloud metadata endpoint, an
+ * admin page on localhost, a service on the private network: ffmpeg would fetch it, fail to
+ * find audio in it, and the bot would move on, but the request was still made. The index is
+ * a third party describing files uploaded by strangers, so it does not get to choose which
+ * addresses this bot connects to.
+ */
+test('a url pointing inside the network is not offered', () => {
+  for (const host of [
+    'http://127.0.0.1/a.mp3',
+    'http://localhost/a.mp3',
+    'http://169.254.169.254/latest/meta-data/',
+    'http://10.0.0.5/a.mp3',
+    'http://192.168.1.1/a.mp3',
+    'http://172.16.0.1/a.mp3',
+    'http://[::1]/a.mp3',
+  ]) {
+    assert.equal(playable(row({ url: host })), false, `${host} was offered`);
+  }
+});
+
+test('an ordinary public url is still fine', () => {
+  assert.equal(playable(row({ url: 'https://cdn.freesound.org/previews/1/1.mp3' })), true);
+});
+
+test('a url that is not http at all is not offered', () => {
+  for (const url of ['file:///etc/passwd', 'concat:a|b', 'data:audio/mp3;base64,AAA']) {
+    assert.equal(playable(row({ url })), false, `${url} was offered`);
+  }
+});
+
 test('an empty query asks for nothing at all', async () => {
   const { impl, calls } = fakeFetch({ results: [row()] });
   assert.deepEqual(await search('   ', { fetchImpl: impl }), []);

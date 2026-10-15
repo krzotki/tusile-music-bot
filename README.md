@@ -96,7 +96,7 @@ often as after successes.
 npm test
 ```
 
-67 of them, no network and no ffmpeg needed. They also run during `docker build`, so an
+73 of them, no network and no ffmpeg needed. They also run during `docker build`, so an
 image cannot be built from code that does not pass.
 
 ## Licence

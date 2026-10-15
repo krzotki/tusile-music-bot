@@ -30,6 +30,14 @@ const FRAME_BYTES = FRAME_SAMPLES * 2;
  */
 function ffmpegArgs(url, { seekMs = 0 } = {}) {
   const args = ['-nostdin', '-loglevel', 'error'];
+  // ffmpeg speaks far more than HTTP. `-i` also accepts file:, concat:, data:, subfile:
+  // and a few dozen others, and the url handed to it came from a third party index
+  // describing files uploaded by strangers. Without this, a result whose url is
+  // `file:///etc/passwd` is a bot reading a file off its host and playing it as noise into
+  // a voice channel, and `concat:` is the same trick with a playlist. search.js refuses
+  // anything that is not http, and this is the gate that still holds when somebody
+  // replaces search.js with their own, which the README invites them to do.
+  args.push('-protocol_whitelist', 'http,https,tcp,tls,crypto');
   args.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
   if (seekMs > 0) args.push('-ss', (seekMs / 1000).toFixed(3));
   args.push('-i', url);

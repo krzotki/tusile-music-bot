@@ -75,6 +75,28 @@ test('everything is brought to roughly the same loudness', () => {
   assert.match(args[args.indexOf('-af') + 1], /loudnorm/);
 });
 
+/**
+ * ffmpeg speaks far more than HTTP.
+ *
+ * `-i` accepts file:, concat:, data:, rtp: and a few dozen others, and the url handed to it
+ * came from a third party search index describing files uploaded by strangers. Without a
+ * whitelist, a result whose url is `file:///etc/passwd` is a bot that reads a file off the
+ * host and plays it as noise into a voice channel, and `concat:` is the same trick with a
+ * playlist. The startsWith('http') check in search.js is the first gate; this is the one
+ * that holds when somebody changes that file.
+ */
+test('ffmpeg is allowed to speak http and nothing else', () => {
+  const args = ffmpegArgs('https://example.com/a.mp3');
+  const allowed = args[args.indexOf('-protocol_whitelist') + 1];
+  assert.ok(allowed, 'no protocol whitelist at all');
+
+  const protocols = allowed.split(',');
+  assert.ok(protocols.includes('https'));
+  for (const dangerous of ['file', 'concat', 'data', 'subfile', 'pipe']) {
+    assert.ok(!protocols.includes(dangerous), `${dangerous} is allowed`);
+  }
+});
+
 test('the url is what ffmpeg reads, and nothing is downloaded first', () => {
   const args = ffmpegArgs('https://example.com/a.mp3');
   assert.equal(args[args.indexOf('-i') + 1], 'https://example.com/a.mp3');

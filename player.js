@@ -24,6 +24,20 @@ const LEAD_IN_MS = 700;
 /** Let the last frames actually leave before hanging up. */
 const TAIL_MS = 400;
 
+/**
+ * The longest any one track may hold the channel, counted in frames actually played.
+ *
+ * search.js has a twenty minute limit too, and it is advisory: it reads the index's own
+ * metadata, and a row with no duration is kept on purpose, because most of the CC0
+ * catalogue has none. So a twelve hour stream with no duration field walks straight past
+ * it, and a live radio url never ends at all.
+ *
+ * This one counts what was played, which no metadata can lie about. Twenty five minutes,
+ * a little over the search limit, so an ordinary long track reaches its real end rather
+ * than being cut off a few seconds early by a rounding difference.
+ */
+const MAX_FRAMES = 25 * 60 * 100;
+
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Session {
@@ -44,6 +58,7 @@ class Session {
     this.spawn = spawn;
     this.announce = announce;
     this.sleep = sleep;
+    this.maxFrames = MAX_FRAMES;
 
     this.queue = new Queue();
     this.room = null;
@@ -134,6 +149,10 @@ class Session {
         if (this.skipping || this.stopped) break;
         await this.room.publish(samples);
         frames += 1;
+        if (frames >= this.maxFrames) {
+          this.log(`${track.title} hit the length limit and was cut off`);
+          break;
+        }
       }
     } catch (err) {
       // One bad track must not end the evening. The queue moves on.
@@ -196,4 +215,4 @@ async function connectToRoom(url, token) {
   };
 }
 
-export { Session, connectToRoom, LEAD_IN_MS, TAIL_MS };
+export { Session, connectToRoom, LEAD_IN_MS, TAIL_MS, MAX_FRAMES };

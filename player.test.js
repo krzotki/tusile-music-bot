@@ -151,6 +151,33 @@ test('a stopped session refuses new tracks rather than reviving', async () => {
   await assert.rejects(() => session.enqueue(track(), 'u1'), /ended/);
 });
 
+/**
+ * The twenty minute limit in search.js is read off the index's own metadata, and a row
+ * with no duration is kept on purpose because most of the CC0 catalogue has none. So the
+ * cap is advisory: a twelve hour stream with no duration field walks straight past it.
+ *
+ * This is the one that is not advisory. It counts frames actually played, which no
+ * metadata can lie about.
+ */
+test('a track that runs forever is cut off rather than owning the channel', async () => {
+  const { session, published } = harness({ frames: 10 });
+  session.maxFrames = 4;
+  await session.enqueue(track(), 'u1');
+  await settle(session);
+
+  assert.equal(published.length, 4, 'it played past its own limit');
+});
+
+test('and the queue moves on to the next track after cutting one off', async () => {
+  const { session, published } = harness({ frames: 10 });
+  session.maxFrames = 3;
+  await session.enqueue(track('one'), 'u1');
+  await session.enqueue(track('two'), 'u1');
+  await settle(session);
+
+  assert.equal(published.length, 6);
+});
+
 test('each track is announced as it starts', async () => {
   const { session } = harness({ frames: 1 });
   const announced = [];
