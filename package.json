@@ -1,0 +1,23 @@
+{
+  "name": "tusile-music-bot",
+  "version": "1.0.0",
+  "description": "Plays openly licensed music in a Tusile voice channel. An example bot built on @tusile/bot.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/krzotki/tusile-music-bot.git"
+  },
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bin.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@livekit/rtc-node": "^0.13.0",
+    "@tusile/bot": "^0.4.0"
+  }
+}
