@@ -96,6 +96,18 @@ async function openAudioStream(raw, { requestImpl, lookup, maxHops = MAX_HOPS, s
           path: `${url.pathname}${url.search}`,
           method: 'GET',
           lookup: resolve,
+          // Its own socket, every time.
+          //
+          // Node's global agent keeps connections alive and reuses them by host and port,
+          // and a reused socket does not call `lookup` at all: measured, one lookup for two
+          // requests. That reuse is not itself a hole, because the socket it hands back was
+          // validated when it was opened. But it makes "every connection went through the
+          // check" a claim you have to reason about the pool to believe, and the next person
+          // to read this should not have to. A fresh socket makes it true outright.
+          //
+          // Nothing is lost: each of these is one long audio stream, so there is no second
+          // request to amortise a kept connection over.
+          agent: false,
           signal,
           headers: {
             'User-Agent': 'tusile-music-bot (https://github.com/krzotki/tusile-music-bot)',

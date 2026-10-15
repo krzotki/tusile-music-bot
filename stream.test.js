@@ -198,3 +198,107 @@ test('what comes back is the body, ready to read', async () => {
   for await (const chunk of body) chunks.push(chunk);
   assert.equal(Buffer.concat(chunks).toString(), 'audio');
 });
+
+/**
+ * That node:http honours the `lookup` we give it, against a real socket.
+ *
+ * Every test above drives a fake request, which cannot tell whether Node would have used
+ * our lookup at all. The whole fix rests on it doing so: if `lookup` were ignored on any
+ * path, the socket would resolve the name itself and the pinning would be theatre that
+ * passes its own tests. This file already shipped one argument that read perfectly and did
+ * nothing, so "it looks right" is not evidence.
+ *
+ * Localhost only, no outside network. The first half proves Node routes the connection
+ * through our function; the second proves refusing inside it stops the connection dead
+ * rather than merely reporting afterwards.
+ */
+test('node really routes the connection through the lookup it is given', async () => {
+  const { createServer, request } = await import('node:http');
+  const server = createServer((_req, res) => { res.writeHead(200); res.end('reached'); });
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
+  const { port } = server.address();
+
+  try {
+    let askedFor = null;
+    const res = await new Promise((ok, fail) => {
+      const req = request({
+        protocol: 'http:', hostname: 'definitely-not-real.invalid', port, path: '/',
+        lookup: (host, _opts, cb) => {
+          askedFor = host;
+          cb(null, [{ address: '127.0.0.1', family: 4 }]);
+        },
+      }, ok);
+      req.on('error', fail);
+      req.end();
+    });
+    let body = '';
+    for await (const chunk of res) body += chunk;
+
+    assert.equal(askedFor, 'definitely-not-real.invalid', 'node resolved the name itself');
+    assert.equal(body, 'reached', 'the lookup did not decide where the socket went');
+
+    // And refusing in it is a refusal, not a report after the fact.
+    let refused = null;
+    try {
+      await new Promise((ok, fail) => {
+        const req = request({
+          protocol: 'http:', hostname: 'definitely-not-real.invalid', port, path: '/',
+          lookup: (_h, _o, cb) => cb(new Error('not a public address (127.0.0.1)')),
+          // Its own socket. Without this the request reuses the one the half above left
+          // in the keep-alive pool and never calls lookup, which is what this test found
+          // the first time it ran, and why stream.js now passes agent: false.
+          agent: false,
+        }, ok);
+        req.on('error', fail);
+        req.end();
+      });
+    } catch (err) {
+      refused = err.message;
+    }
+    assert.match(String(refused), /not a public address/, 'the connection went ahead anyway');
+  } finally {
+    server.close();
+  }
+});
+
+/**
+ * And the same thing through our own code: a name that would resolve inside is refused
+ * before any socket is opened, with the real node:http rather than a fake.
+ */
+/**
+ * Every connection gets a socket of its own, so every connection goes through the lookup.
+ *
+ * Node's global agent keeps connections alive and reuses them by host and port, and a
+ * reused socket calls no lookup at all. The reuse is safe in itself, since the socket was
+ * validated when it was opened, but "every connection was checked" should be true outright
+ * rather than true once you have reasoned about the pool.
+ */
+test('every request gets its own socket rather than a pooled one', async () => {
+  const { impl, calls } = fakeRequest({ responses: [{ statusCode: 200 }] });
+  await openAudioStream('https://cdn.example.com/a.mp3', {
+    requestImpl: impl,
+    lookup: publicAnswer,
+  });
+  assert.equal(calls[0].agent, false, 'it can be handed a pooled connection');
+});
+
+test('and openAudioStream refuses a rebinding answer against the real http module', async () => {
+  const { createServer } = await import('node:http');
+  let hit = false;
+  const server = createServer((_req, res) => { hit = true; res.writeHead(200); res.end('x'); });
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
+  const { port } = server.address();
+
+  try {
+    await assert.rejects(
+      () => openAudioStream(`http://cdn.example.com:${port}/a.mp3`, {
+        // A public name whose answer points at the loopback server: rebinding, in one step.
+        lookup: async () => [{ address: '127.0.0.1', family: 4 }],
+      }),
+      /not a public address/,
+    );
+    assert.equal(hit, false, 'the request reached the loopback server anyway');
+  } finally {
+    server.close();
+  }
+});
