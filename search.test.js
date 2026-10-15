@@ -88,6 +88,56 @@ test('a url pointing inside the network is not offered', () => {
   }
 });
 
+/**
+ * The same address, written so a filter does not recognise it.
+ *
+ * All of these are 127.0.0.1. Node's URL parser normalises every one of them, which is
+ * why the check is written against the parsed hostname rather than the text, and why
+ * these are here: the day somebody rewrites this filter against the raw string, they
+ * break on this test rather than in production.
+ */
+test('loopback dressed up as something else is still loopback', () => {
+  for (const url of [
+    'http://2130706433/a.mp3',
+    'http://0177.0.0.1/a.mp3',
+    'http://0x7f000001/a.mp3',
+    'http://127.1/a.mp3',
+    'http://[0:0:0:0:0:0:0:1]/a.mp3',
+    'http://[::ffff:127.0.0.1]/a.mp3',
+    'http://[::ffff:7f00:1]/a.mp3',
+  ]) {
+    assert.equal(playable(row({ url })), false, `${url} was offered`);
+  }
+});
+
+/**
+ * Credentials in a url are the oldest way of making one read as somewhere it is not, and
+ * the two parsers that matter here do not have to agree about them: this filter uses
+ * Node's, and the fetching is done by ffmpeg's. Nothing in an openly licensed music index
+ * has a password in it, so the whole question is avoided rather than adjudicated.
+ */
+test('a url carrying credentials is refused rather than interpreted', () => {
+  for (const url of [
+    'http://evil.com@127.0.0.1/a.mp3',
+    'http://user:pass@cdn.freesound.org/a.mp3',
+    'http://cdn.freesound.org@evil.example/a.mp3',
+  ]) {
+    assert.equal(playable(row({ url })), false, `${url} was offered`);
+  }
+});
+
+/**
+ * ffmpeg must receive the url this filter judged, not the text it was judged from.
+ *
+ * Two parsers reading one string is where SSRF filters usually fail: whatever subtlety
+ * Node's resolves one way and ffmpeg's resolves another is a gap by construction. Handing
+ * on the normalised form removes the second parse.
+ */
+test('the url handed on is the parsed one, not the text it came from', () => {
+  const track = toTrack(row({ url: 'http://CDN.Freesound.ORG:80/previews/1/1.mp3?x=1' }));
+  assert.equal(track.url, 'http://cdn.freesound.org/previews/1/1.mp3?x=1');
+});
+
 test('an ordinary public url is still fine', () => {
   assert.equal(playable(row({ url: 'https://cdn.freesound.org/previews/1/1.mp3' })), true);
 });

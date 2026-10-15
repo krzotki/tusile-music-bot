@@ -42,6 +42,7 @@ function harness({ frames = 5, exitCode = 0 } = {}) {
     log: (l) => events.push(`log:${l}`),
     connect: async () => { events.push('connect'); return room; },
     spawn: spawnImpl,
+    lookup: async () => [{ address: '93.184.216.34', family: 4 }],
     sleep: async () => {},
   });
   return { session, published, events };

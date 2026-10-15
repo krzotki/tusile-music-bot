@@ -4,6 +4,8 @@ import { Readable } from 'node:stream';
 
 import { cutFrames, ffmpegArgs, decode, FRAME_BYTES, FRAME_SAMPLES } from './decode.js';
 
+const URL_OK = 'https://cdn.freesound.org/previews/1/1.mp3';
+
 test('whole frames come out and the remainder is carried', () => {
   const buffer = Buffer.alloc(FRAME_BYTES + 10);
   const { frames, rest } = cutFrames(buffer);
@@ -97,10 +99,71 @@ test('ffmpeg is allowed to speak http and nothing else', () => {
   }
 });
 
+/**
+ * A name that points inside.
+ *
+ * The address filter in search.js reads what is written in the url, so it catches
+ * `http://10.0.0.5/` and cannot catch `http://files.attacker.example/` which resolves to
+ * the same place. This is the lookup that closes the plain case, here rather than in
+ * search.js because the README invites people to replace search.js and not this.
+ *
+ * It does not close DNS rebinding, and pretending otherwise would be worse than not having
+ * it: ffmpeg resolves the name again when it connects, and nothing in this process can make
+ * that answer the same one. A bot sitting on a network with reachable internal services
+ * wants egress rules, which the README says.
+ */
+test('a hostname that resolves inside the network is refused', async () => {
+  const lookup = async () => [{ address: '10.0.0.5', family: 4 }];
+  const errors = [];
+  const frames = [];
+  for await (const f of decode('http://files.attacker.example/a.mp3', {
+    spawn: () => { throw new Error('ffmpeg was started'); },
+    lookup,
+    onError: (e) => errors.push(e.message),
+  })) {
+    frames.push(f);
+  }
+  assert.equal(frames.length, 0);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /10\.0\.0\.5|not a public address/i);
+});
+
+test('a hostname that resolves to a public address is played', async () => {
+  const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+  const { child } = fakeChild([Buffer.alloc(FRAME_BYTES * 2)]);
+  const frames = [];
+  for await (const f of decode('https://cdn.freesound.org/a.mp3', {
+    spawn: () => child,
+    lookup,
+  })) {
+    frames.push(f);
+  }
+  assert.equal(frames.length, 2);
+});
+
+// Several answers, one of them inside: refused. A name resolving to both is the shape of
+// the attack, not an accident.
+test('one private answer among several is enough to refuse', async () => {
+  const lookup = async () => [
+    { address: '93.184.216.34', family: 4 },
+    { address: '169.254.169.254', family: 4 },
+  ];
+  const errors = [];
+  for await (const _f of decode('http://x.example/a.mp3', {
+    spawn: () => { throw new Error('ffmpeg was started'); },
+    lookup,
+    onError: (e) => errors.push(e.message),
+  })) { /* nothing should arrive */ }
+  assert.equal(errors.length, 1);
+});
+
 test('the url is what ffmpeg reads, and nothing is downloaded first', () => {
   const args = ffmpegArgs('https://example.com/a.mp3');
   assert.equal(args[args.indexOf('-i') + 1], 'https://example.com/a.mp3');
 });
+
+/** Every answer public, so these tests never touch DNS. */
+const outside = async () => [{ address: '93.184.216.34', family: 4 }];
 
 /** A child process, as far as decode() is concerned. */
 function fakeChild(chunks, { exitCode = 0 } = {}) {
@@ -120,7 +183,7 @@ test('bytes split across two chunks still make whole frames', async () => {
   const half = Buffer.alloc(FRAME_BYTES / 2);
   const { child } = fakeChild([half, half, half, half]);
   const frames = [];
-  for await (const f of decode('u', { spawn: () => child })) frames.push(f);
+  for await (const f of decode(URL_OK, { spawn: () => child, lookup: outside })) frames.push(f);
   assert.equal(frames.length, 2);
 });
 
@@ -133,7 +196,7 @@ test('a track that produced no audio is reported, not played silently', async ()
   const errors = [];
   const { child } = fakeChild([], { exitCode: 1 });
   const frames = [];
-  for await (const f of decode('u', { spawn: () => child, onError: (e) => errors.push(e) })) {
+  for await (const f of decode(URL_OK, { spawn: () => child, lookup: outside, onError: (e) => errors.push(e) })) {
     frames.push(f);
   }
   assert.equal(frames.length, 0);
@@ -143,6 +206,6 @@ test('a track that produced no audio is reported, not played silently', async ()
 // Abandoning the generator is what /skip does. It must not leave an ffmpeg behind.
 test('walking away from a track kills ffmpeg', async () => {
   const { child, killed } = fakeChild([Buffer.alloc(FRAME_BYTES * 10)], { exitCode: null });
-  for await (const _f of decode('u', { spawn: () => child })) break;
+  for await (const _f of decode(URL_OK, { spawn: () => child, lookup: outside })) break;
   assert.deepEqual(killed, ['SIGKILL']);
 });

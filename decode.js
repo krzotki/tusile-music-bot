@@ -11,6 +11,10 @@
  * one sample, and neither needs a subprocess to catch.
  */
 
+import { lookup as dnsLookup } from 'node:dns/promises';
+
+import { resolvesOutside } from './addresses.js';
+
 /** LiveKit's side of the deal. Matches what the Tusile voice stack uses everywhere. */
 const SAMPLE_RATE = 48000;
 const CHANNELS = 1;
@@ -88,7 +92,33 @@ function cutFrames(buffer) {
  * Killing ffmpeg on the way out is in a finally, because a generator abandoned mid track
  * still has to not leave a process behind.
  */
-async function* decode(url, { spawn, seekMs = 0, onError } = {}) {
+async function* decode(url, { spawn, seekMs = 0, onError, lookup = dnsLookup } = {}) {
+  // The address filter in search.js reads what is written in the url, so it catches
+  // `http://10.0.0.5/` and cannot catch a name that resolves to the same place. This is
+  // the lookup that closes the plain case, and it lives here rather than in search.js
+  // because the README invites people to replace search.js and not this.
+  //
+  // It does not close DNS rebinding: ffmpeg resolves the name again when it connects and
+  // nothing here can make that answer the same one. The honest answer to rebinding is
+  // egress rules on the network the bot runs on, which the README says.
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    if (onError) onError(new Error(`not a url: ${url}`));
+    return;
+  }
+  try {
+    const { ok, address } = await resolvesOutside(host, lookup);
+    if (!ok) {
+      if (onError) onError(new Error(`${host} is not a public address (${address})`));
+      return;
+    }
+  } catch (err) {
+    if (onError) onError(new Error(`could not resolve ${host}: ${err.message}`));
+    return;
+  }
+
   const child = spawn('ffmpeg', ffmpegArgs(url, { seekMs }));
   let stderr = '';
   if (child.stderr) child.stderr.on('data', (d) => { stderr += String(d); });

@@ -68,6 +68,7 @@ you fork this and take that out, you have made something you are not allowed to 
 | File | What is in it |
 |---|---|
 | `search.js` | Openverse. No API key, no account. Swap this file to change where music comes from. |
+| `addresses.js` | Which addresses the bot will be pointed at. Read this before you swap `search.js`. |
 | `queue.js` | What is playing and what is next. Pure, so the rules are tested without a network. |
 | `decode.js` | ffmpeg: anything on the internet to the raw samples LiveKit takes. |
 | `player.js` | One voice channel, one room, one queue draining into it. |
@@ -90,13 +91,26 @@ microphone and playing nothing is what people report as "the bot is broken". `ha
 in a `finally` and swallows its own errors, because it runs after failures at least as
 often as after successes.
 
+## If you run this where internal services are reachable
+
+The bot fetches whatever url the search index hands back, which makes every result a
+request made from inside your network. `addresses.js` refuses loopback, link local and
+private ranges, in every encoding the URL parser normalises, and `decode.js` resolves the
+hostname and checks the answers before ffmpeg is started. ffmpeg itself is held to
+`http` and `https`, because `-i` otherwise accepts `file:` and `concat:` too.
+
+That is the floor, not the answer. ffmpeg resolves the name again when it connects, and
+nothing in this process can make that answer the same one, so DNS rebinding is not closed
+by any of it. If this bot shares a network with anything worth reaching, give it egress
+rules.
+
 ## Tests
 
 ```sh
 npm test
 ```
 
-73 of them, no network and no ffmpeg needed. They also run during `docker build`, so an
+79 of them, no network and no ffmpeg needed. They also run during `docker build`, so an
 image cannot be built from code that does not pass.
 
 ## Licence
