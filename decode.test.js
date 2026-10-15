@@ -119,6 +119,7 @@ test('a hostname that resolves inside the network is refused', async () => {
   for await (const f of decode('http://files.attacker.example/a.mp3', {
     spawn: () => { throw new Error('ffmpeg was started'); },
     lookup,
+    fetchImpl: noRedirect,
     onError: (e) => errors.push(e.message),
   })) {
     frames.push(f);
@@ -135,6 +136,7 @@ test('a hostname that resolves to a public address is played', async () => {
   for await (const f of decode('https://cdn.freesound.org/a.mp3', {
     spawn: () => child,
     lookup,
+    fetchImpl: noRedirect,
   })) {
     frames.push(f);
   }
@@ -152,6 +154,7 @@ test('one private answer among several is enough to refuse', async () => {
   for await (const _f of decode('http://x.example/a.mp3', {
     spawn: () => { throw new Error('ffmpeg was started'); },
     lookup,
+    fetchImpl: noRedirect,
     onError: (e) => errors.push(e.message),
   })) { /* nothing should arrive */ }
   assert.equal(errors.length, 1);
@@ -164,6 +167,9 @@ test('the url is what ffmpeg reads, and nothing is downloaded first', () => {
 
 /** Every answer public, so these tests never touch DNS. */
 const outside = async () => [{ address: '93.184.216.34', family: 4 }];
+
+/** A server that redirects nowhere, so no test here reaches the network. */
+const noRedirect = async () => ({ status: 200, headers: { get: () => null } });
 
 /** A child process, as far as decode() is concerned. */
 function fakeChild(chunks, { exitCode = 0 } = {}) {
@@ -183,7 +189,8 @@ test('bytes split across two chunks still make whole frames', async () => {
   const half = Buffer.alloc(FRAME_BYTES / 2);
   const { child } = fakeChild([half, half, half, half]);
   const frames = [];
-  for await (const f of decode(URL_OK, { spawn: () => child, lookup: outside })) frames.push(f);
+  for await (const f of decode(URL_OK, { spawn: () => child, lookup: outside,
+    fetchImpl: noRedirect, fetchImpl: noRedirect })) frames.push(f);
   assert.equal(frames.length, 2);
 });
 
@@ -196,7 +203,8 @@ test('a track that produced no audio is reported, not played silently', async ()
   const errors = [];
   const { child } = fakeChild([], { exitCode: 1 });
   const frames = [];
-  for await (const f of decode(URL_OK, { spawn: () => child, lookup: outside, onError: (e) => errors.push(e) })) {
+  for await (const f of decode(URL_OK, { spawn: () => child, lookup: outside,
+    fetchImpl: noRedirect, onError: (e) => errors.push(e) })) {
     frames.push(f);
   }
   assert.equal(frames.length, 0);
@@ -206,6 +214,60 @@ test('a track that produced no audio is reported, not played silently', async ()
 // Abandoning the generator is what /skip does. It must not leave an ffmpeg behind.
 test('walking away from a track kills ffmpeg', async () => {
   const { child, killed } = fakeChild([Buffer.alloc(FRAME_BYTES * 10)], { exitCode: null });
-  for await (const _f of decode(URL_OK, { spawn: () => child, lookup: outside })) break;
+  for await (const _f of decode(URL_OK, { spawn: () => child, lookup: outside,
+    fetchImpl: noRedirect, fetchImpl: noRedirect })) break;
   assert.deepEqual(killed, ['SIGKILL']);
+});
+
+/**
+ * The whole point of walking the redirects here: ffmpeg is handed where they ended.
+ *
+ * Handing it the original and telling it not to follow would simply not play the track,
+ * and handing it the original while letting it follow is the hole this closes.
+ */
+test('ffmpeg is given the url the redirects ended at', async () => {
+  let hop = 0;
+  const fetchImpl = async () => {
+    hop += 1;
+    return hop === 1
+      ? { status: 302, headers: { get: () => 'https://cdn2.example.com/real.mp3' } }
+      : { status: 200, headers: { get: () => null } };
+  };
+  const { child } = fakeChild([Buffer.alloc(FRAME_BYTES)]);
+  let given = null;
+  for await (const _f of decode('https://cdn.example.com/a.mp3', {
+    spawn: (_cmd, args) => { given = args[args.indexOf('-i') + 1]; return child; },
+    lookup: outside,
+    fetchImpl,
+  })) { /* drain */ }
+  assert.equal(given, 'https://cdn2.example.com/real.mp3');
+});
+
+test('ffmpeg is told to follow no redirects', () => {
+  const args = ffmpegArgs('https://example.com/a.mp3');
+  assert.equal(args[args.indexOf('-max_redirects') + 1], '0');
+});
+
+/**
+ * That ffmpeg accepts the arguments at all.
+ *
+ * Every other test here reads the array this module builds, which cannot tell a real
+ * ffmpeg option from an invented one. That is not hypothetical: this file shipped
+ * `-follow_redirects 0`, which reads perfectly, is in plenty of documentation, and does
+ * not exist in ffmpeg's command line. The unit test agreed with it and a live run found
+ * it, with ffmpeg exiting on "Unrecognized option" before a single byte of audio.
+ *
+ * Points at a port nothing listens on, so this needs no network: the question is whether
+ * ffmpeg parses the arguments, not whether it finds a track.
+ */
+test('and ffmpeg actually understands them', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const probe = spawnSync('ffmpeg', ['-hide_banner', '-version']);
+  if (probe.error) return t.skip('ffmpeg is not installed here');
+
+  const args = ffmpegArgs('http://93.184.216.34:1/nothing.mp3');
+  const run = spawnSync('ffmpeg', args, { encoding: 'utf8', timeout: 20000 });
+  const said = `${run.stderr || ''}${run.stdout || ''}`;
+  assert.doesNotMatch(said, /Unrecognized option|Option not found|Unknown option/i,
+    `ffmpeg rejected the arguments: ${said.split('\n')[0]}`);
 });

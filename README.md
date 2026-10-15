@@ -95,9 +95,11 @@ often as after successes.
 
 The bot fetches whatever url the search index hands back, which makes every result a
 request made from inside your network. `addresses.js` refuses loopback, link local and
-private ranges, in every encoding the URL parser normalises, and `decode.js` resolves the
-hostname and checks the answers before ffmpeg is started. ffmpeg itself is held to
-`http` and `https`, because `-i` otherwise accepts `file:` and `concat:` too.
+private ranges, in every encoding the URL parser normalises, including the IPv4 addresses
+that can be carried inside an IPv6 one. `decode.js` resolves the hostname and follows the
+redirects itself, judging every hop the same way, and only then starts ffmpeg, which is
+held to `http` and `https` (`-i` otherwise accepts `file:` and `concat:`) and told to
+follow no redirects of its own.
 
 That is the floor, not the answer. ffmpeg resolves the name again when it connects, and
 nothing in this process can make that answer the same one, so DNS rebinding is not closed
@@ -110,7 +112,7 @@ rules.
 npm test
 ```
 
-79 of them, no network and no ffmpeg needed. They also run during `docker build`, so an
+91 of them. All but one need no network and no ffmpeg; that one runs ffmpeg to check it understands the arguments this bot builds, because no test that reads an array of strings can tell a real option from an invented one, and this file shipped one that reads perfectly and does not exist. They also run during `docker build`, so an
 image cannot be built from code that does not pass.
 
 ## Licence

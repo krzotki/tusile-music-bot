@@ -43,6 +43,7 @@ function harness({ frames = 5, exitCode = 0 } = {}) {
     connect: async () => { events.push('connect'); return room; },
     spawn: spawnImpl,
     lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+    fetchImpl: async () => ({ status: 200, headers: { get: () => null } }),
     sleep: async () => {},
   });
   return { session, published, events };

@@ -55,21 +55,30 @@ function isPublicIPv6(name) {
   if (name === '::1' || name === '::') return false;
   // Unique local (fc00::/7) and link local (fe80::/10).
   if (/^f[cd][0-9a-f]{0,2}:/.test(name) || /^fe[89ab][0-9a-f]?:/.test(name)) return false;
-  // IPv4 mapped, in both the readable form and the one the parser normalises it to:
-  // [::ffff:127.0.0.1] becomes [::ffff:7f00:1], which no v4 rule would ever match.
-  const mapped = /^::ffff:(.+)$/.exec(name);
-  if (mapped) {
-    const rest = mapped[1];
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(rest)) return isPublicIPv4(rest);
-    const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest);
-    if (hex) {
-      const packed = (parseInt(hex[1], 16) << 16) | parseInt(hex[2], 16);
-      const dotted = [24, 16, 8, 0].map((s) => (packed >>> s) & 255).join('.');
-      return isPublicIPv4(dotted);
-    }
-    return false;
+
+  // An IPv4 address carried inside an IPv6 one, in every shape that reaches here.
+  //
+  // Three prefixes do this: ::ffff:a.b.c.d (mapped), ::a.b.c.d (the deprecated compatible
+  // form), and 64:ff9b::a.b.c.d (NAT64). All three are written with dotted decimal and all
+  // three are normalised by the URL parser into hex groups, so [::127.0.0.1] arrives here
+  // as ::7f00:1. That matches no v4 rule, and until this it matched no v6 rule either: it
+  // fell through to "an ordinary public address" and was allowed.
+  const carried = /^(?:::ffff:|::|64:ff9b::)(.+)$/.exec(name);
+  if (carried) {
+    const v4 = embeddedIPv4(carried[1]);
+    // Something after a v4-carrying prefix that is not an address is nothing we recognise.
+    return v4 === null ? false : isPublicIPv4(v4);
   }
   return true;
+}
+
+/** "127.0.0.1" or "7f00:1" to dotted decimal, or null when it is neither. */
+function embeddedIPv4(rest) {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(rest)) return rest;
+  const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest);
+  if (!hex) return null;
+  const packed = (parseInt(hex[1], 16) * 65536) + parseInt(hex[2], 16);
+  return [24, 16, 8, 0].map((shift) => (packed >>> shift) & 255).join('.');
 }
 
 /**
@@ -123,4 +132,48 @@ async function resolvesOutside(host, lookup) {
   return { ok: true, address: answers[0]?.address };
 }
 
-export { isPublicHost, publicUrl, resolvesOutside };
+/**
+ * Follow the redirects ourselves, judging every hop, and return where it ends.
+ *
+ * ffmpeg follows redirects, which made validating the url it was handed prove nothing on
+ * its own: a url on a perfectly ordinary public host answering 302 to
+ * http://169.254.169.254/ walked past the address rules and the name resolution in one
+ * hop. So the hops happen here, each one judged exactly like the first, and ffmpeg is told
+ * to follow none.
+ *
+ * HEAD rather than GET, with the body never read: the question is where this ends, not
+ * what is there. Some CDNs refuse HEAD, and a status that is not a redirect ends the walk
+ * whatever it is, because deciding whether a 403 is fatal is ffmpeg's job and it is about
+ * to have it.
+ */
+async function resolveFinalUrl(raw, { fetchImpl = fetch, lookup, maxHops = 5, signal } = {}) {
+  let current = publicUrl(raw);
+  if (current === null) throw new Error(`refused: ${raw}`);
+
+  for (let hop = 0; hop <= maxHops; hop++) {
+    const { ok, address } = await resolvesOutside(new URL(current).hostname, lookup);
+    if (!ok) throw new Error(`${new URL(current).hostname} is not a public address (${address})`);
+
+    let res;
+    try {
+      res = await fetchImpl(current, { method: 'HEAD', redirect: 'manual', signal });
+    } catch {
+      // Unreachable, or a server that will not answer a HEAD. Either way this hop is as
+      // far as we can see, and it is one we have already judged.
+      return current;
+    }
+    if (res.status < 300 || res.status > 399) return current;
+
+    const location = res.headers?.get?.('location');
+    if (!location) return current;
+
+    // Resolved against the url it came from: a bare path is legal and common, and
+    // resolving one against the wrong base is another way to end up somewhere unjudged.
+    const next = publicUrl(new URL(location, current).href);
+    if (next === null) throw new Error(`refused redirect to ${location}`);
+    current = next;
+  }
+  throw new Error(`too many redirects from ${raw}`);
+}
+
+export { isPublicHost, publicUrl, resolvesOutside, resolveFinalUrl };

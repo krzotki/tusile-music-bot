@@ -13,7 +13,7 @@
 
 import { lookup as dnsLookup } from 'node:dns/promises';
 
-import { resolvesOutside } from './addresses.js';
+import { resolveFinalUrl } from './addresses.js';
 
 /** LiveKit's side of the deal. Matches what the Tusile voice stack uses everywhere. */
 const SAMPLE_RATE = 48000;
@@ -42,6 +42,10 @@ function ffmpegArgs(url, { seekMs = 0 } = {}) {
   // anything that is not http, and this is the gate that still holds when somebody
   // replaces search.js with their own, which the README invites them to do.
   args.push('-protocol_whitelist', 'http,https,tcp,tls,crypto');
+  // And it follows none. Every hop was walked and judged before we got here; letting
+  // ffmpeg take one more would be the one nobody looked at, which is exactly how a url on
+  // an ordinary public host reaches a metadata endpoint.
+  args.push('-max_redirects', '0');
   args.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5');
   if (seekMs > 0) args.push('-ss', (seekMs / 1000).toFixed(3));
   args.push('-i', url);
@@ -92,7 +96,7 @@ function cutFrames(buffer) {
  * Killing ffmpeg on the way out is in a finally, because a generator abandoned mid track
  * still has to not leave a process behind.
  */
-async function* decode(url, { spawn, seekMs = 0, onError, lookup = dnsLookup } = {}) {
+async function* decode(url, { spawn, seekMs = 0, onError, lookup = dnsLookup, fetchImpl } = {}) {
   // The address filter in search.js reads what is written in the url, so it catches
   // `http://10.0.0.5/` and cannot catch a name that resolves to the same place. This is
   // the lookup that closes the plain case, and it lives here rather than in search.js
@@ -101,25 +105,25 @@ async function* decode(url, { spawn, seekMs = 0, onError, lookup = dnsLookup } =
   // It does not close DNS rebinding: ffmpeg resolves the name again when it connects and
   // nothing here can make that answer the same one. The honest answer to rebinding is
   // egress rules on the network the bot runs on, which the README says.
-  let host;
+  // Where this url actually ends, with every redirect judged on the way.
+  //
+  // ffmpeg follows redirects, so validating the url it is handed proves nothing on its
+  // own: an ordinary public host answering 302 to http://169.254.169.254/ is every check
+  // walked past in one hop. The hops are followed here instead and ffmpeg is told to
+  // follow none.
+  //
+  // None of it closes DNS rebinding. ffmpeg resolves the name again when it connects and
+  // nothing in this process can make that answer the same one. The honest answer to
+  // rebinding is egress rules on the network the bot runs on, which the README says.
+  let target;
   try {
-    host = new URL(url).hostname;
-  } catch {
-    if (onError) onError(new Error(`not a url: ${url}`));
-    return;
-  }
-  try {
-    const { ok, address } = await resolvesOutside(host, lookup);
-    if (!ok) {
-      if (onError) onError(new Error(`${host} is not a public address (${address})`));
-      return;
-    }
+    target = await resolveFinalUrl(url, { lookup, fetchImpl });
   } catch (err) {
-    if (onError) onError(new Error(`could not resolve ${host}: ${err.message}`));
+    if (onError) onError(err);
     return;
   }
 
-  const child = spawn('ffmpeg', ffmpegArgs(url, { seekMs }));
+  const child = spawn('ffmpeg', ffmpegArgs(target, { seekMs }));
   let stderr = '';
   if (child.stderr) child.stderr.on('data', (d) => { stderr += String(d); });
 
