@@ -62,6 +62,15 @@ class Session {
     // Injected only so the tests need no network; decode opens the real connection
     // otherwise.
     this.openStream = openStream;
+    /**
+     * Whether this session keeps itself going when the queue runs dry.
+     *
+     * Set by /play with no query. `refill` returns whether it found anything; one that
+     * finds nothing, or throws, ends the session rather than spinning on an empty queue
+     * with a room still open.
+     */
+    this.radio = false;
+    this.refill = null;
     this.maxFrames = MAX_FRAMES;
 
     this.queue = new Queue();
@@ -116,7 +125,18 @@ class Session {
       await this.sleep(LEAD_IN_MS);
 
       while (!this.stopped) {
-        const entry = this.queue.next();
+        let entry = this.queue.next();
+        if (!entry && this.radio && this.refill) {
+          // Awaited inside the one pump loop rather than driven by a timer, so there is
+          // still exactly one thing feeding this room.
+          let more = false;
+          try {
+            more = await this.refill();
+          } catch (err) {
+            this.log(`radio could not find more: ${err.message}`);
+          }
+          if (more) entry = this.queue.next();
+        }
         if (!entry) break;
         this.skipping = false;
         if (this.announce) {

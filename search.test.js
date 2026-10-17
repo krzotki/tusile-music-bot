@@ -181,3 +181,52 @@ test('a body with no results at all is empty, not a crash', async () => {
   const { impl } = fakeFetch({});
   assert.deepEqual(await search('lofi', { fetchImpl: impl }), []);
 });
+
+/**
+ * Asking for music, and getting music.
+ *
+ * Reported with a screenshot from RedChat's staging twin: /play lofi answered with "Hey -
+ * Men Shouting together - Jewish Wedding", one second long. Openverse indexes Freesound
+ * alongside Jamendo, and Freesound is sound effects. Nothing in the request or the filter
+ * said which of the two was wanted, and the first result won.
+ */
+test('it asks Openverse for music, not for every sound it has', async () => {
+  const { impl, calls } = fakeFetch({ results: [row()] });
+  await search('lofi', { fetchImpl: impl });
+  assert.equal(new URL(calls[0].url).searchParams.get('category'), 'music');
+});
+
+// A one second clip is not a track whatever it is filed under, and `category` is a field
+// the index may simply not have for a row.
+test('something far too short to be a track is dropped', () => {
+  assert.equal(playable(row({ duration: 1000 })), false);
+  assert.equal(playable(row({ duration: 12000 })), false);
+  assert.equal(playable(row({ duration: 40000 })), true);
+});
+
+test('and a row with no duration at all is still offered', () => {
+  // Having asked for music, the unknown-duration rows left are worth keeping: refusing
+  // them would drop part of the catalogue to guard against a case the category filter
+  // already handles.
+  assert.equal(playable(row({ duration: undefined })), true);
+});
+
+// The radio varies by page, because Openverse has no "random" and the first page of ten
+// queries is the same forty tracks every evening.
+test('a page can be asked for, and page one is not spelled out', async () => {
+  const { impl, calls } = fakeFetch({ results: [row()] });
+  await search('jazz', { fetchImpl: impl, page: 4 });
+  assert.equal(new URL(calls[0].url).searchParams.get('page'), '4');
+
+  const { impl: plain, calls: plainCalls } = fakeFetch({ results: [row()] });
+  await search('jazz', { fetchImpl: plain });
+  assert.equal(new URL(plainCalls[0].url).searchParams.get('page'), null);
+});
+
+// The radio needs to know how much there is before it can pick a page in it.
+test('the total is reported alongside the results', async () => {
+  const { impl } = fakeFetch({ result_count: 431, results: [row()] });
+  const out = await search('jazz', { fetchImpl: impl, withTotal: true });
+  assert.equal(out.total, 431);
+  assert.equal(out.tracks.length, 1);
+});

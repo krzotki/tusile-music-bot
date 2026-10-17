@@ -19,6 +19,8 @@ import { Bot, toMask } from '@tusile/bot';
 
 import { definitions, handle, nowPlayingLine } from './commands.js';
 import { search } from './search.js';
+import { SEEDS } from './radio.js';
+import { createStationCache } from './stations.js';
 import { Session, connectToRoom } from './player.js';
 
 /**
@@ -114,9 +116,25 @@ export async function runCommand(name, i, sessions, deps = {}) {
   const ctx = {
     userId: i.userId,
     channelId: i.channelId,
+    // Where they are sitting, straight off the interaction.
+    //
+    // The named field arrived in @tusile/bot 0.5.0; `raw` is the frame as the community
+    // sent it, so this works on 0.4.0 too and the fallback can go once every bot here is
+    // past it. A community older than the field sends nothing either way, which reads as
+    // "they did not say" rather than "nowhere".
+    userVoiceChannelId: i.userVoiceChannelId || i.raw?.user_voice_channel_id || '',
     server: i.server,
     log: (line) => log(`[${short(serverId)}] ${line}`),
-    search: deps.search || ((query) => search(query)),
+    // The function itself, not a wrapper around it.
+    //
+    // This was `(query) => search(query)`, which drops every argument after the first. The
+    // radio asks with `withTotal` and got an array back instead of a total, so it found
+    // nothing, every time, in production. Every test passed because each supplied a fake
+    // search that honoured the options the real wiring was discarding: the fake was more
+    // capable than the thing it stood in for.
+    search: contextSearch(deps),
+    // The warmed stations, so the first batch of a radio is already in hand.
+    stations: deps.stations ?? sharedStations,
     // The defer is the only place that can decide who an answer is for: it delivers
     // nothing, and the edit carrying the answer later has no type of its own.
     defer: (options) => i.defer(options),
@@ -138,6 +156,29 @@ export async function runCommand(name, i, sessions, deps = {}) {
   await i.reply({ content: result.content }, { ephemeral: result.type === 'ephemeral' });
   return result;
 }
+
+/**
+ * The search a command context gets.
+ *
+ * Its own function so a test can say "and with no deps, this is the real one", which is
+ * the only thing that would have caught the wrapper that dropped the options.
+ */
+export function contextSearch(deps = {}) {
+  return deps.search ?? search;
+}
+
+/**
+ * The stations, kept warm for the whole process.
+ *
+ * One cache across every community: the catalogue is the same everywhere, and eighteen
+ * stations per community would be eighteen requests per community at a service that takes
+ * the better part of half a minute to answer a cold one.
+ */
+const sharedStations = createStationCache({
+  stations: SEEDS,
+  search: (station) => search(station, { limit: 5 }),
+  log,
+});
 
 /**
  * Attach everything to a bot.
@@ -173,6 +214,10 @@ export async function main() {
   });
 
   const sessions = wire(bot);
+
+  // Before the first command, and without blocking it: a station that is not warm yet is
+  // simply fetched when asked for, slowly, which is what every station used to be.
+  sharedStations.warm().catch((err) => log(`warming stations: ${err.message}`));
 
   const shutdown = async () => {
     log('shutting down');

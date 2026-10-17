@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { wire, runCommand, Sessions } from './index.js';
+import { wire, runCommand, Sessions, contextSearch } from './index.js';
 import { definitions } from './commands.js';
 
 /**
@@ -133,4 +133,47 @@ test('connecting says which address it is talking to', () => {
     console.log = real;
   }
   assert.match(lines.join('\n'), /https:\/\/x\.tusile\.com/);
+});
+
+/**
+ * The options reach the real search.
+ *
+ * Found in production, by the radio answering "I could not find anything to play just
+ * now" every single time. The context's search was `(query) => search(query)`, which
+ * drops every argument after the first, so `withTotal` never arrived, the total read as
+ * nothing, and the batch the radio was handed was undefined.
+ *
+ * Every test of the radio passed, because every one of them supplied a fake search that
+ * honoured the options the real wiring was throwing away. That is the shape of the bug:
+ * the fake was more capable than the thing it stood in for.
+ */
+test('the context search passes its options through, not just the query', async () => {
+  const seen = [];
+  const sessions = new Sessions();
+  const { i } = fakeInteraction({ options: {} });
+  i.userVoiceChannelId = 'v1';
+
+  await runCommand('play', i, sessions, {
+    // An empty pocket, so this falls through to the search being measured rather than to
+    // the real warmed cache, which would go to Openverse and take half a minute.
+    stations: { take: async () => [] },
+    search: async (query, opts) => {
+      seen.push({ query, opts });
+      return opts?.withTotal ? { tracks: [], total: 0 } : [];
+    },
+  });
+
+  assert.ok(seen.length > 0, 'it never searched');
+  assert.ok(
+    seen.some((s) => s.opts && s.opts.withTotal === true),
+    `the radio asked without withTotal: ${JSON.stringify(seen)}`,
+  );
+});
+
+// And with nothing injected, it is the real search rather than a wrapper around it. A
+// wrapper is the only way an argument can go missing, and one did.
+test('with no deps the context search is the module itself', async () => {
+  const { search } = await import('./search.js');
+  assert.equal(contextSearch({}), search);
+  assert.equal(contextSearch(), search);
 });

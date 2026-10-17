@@ -23,6 +23,31 @@ const ENDPOINT = 'https://api.openverse.org/v1/audio/';
 const MAX_DURATION_MS = 20 * 60 * 1000;
 
 /**
+ * And anything shorter than this is not a track.
+ *
+ * Openverse indexes Freesound alongside Jamendo, and Freesound is sound effects. Asking
+ * for `category=music` is the first line of defence and the better one, but a row can
+ * simply have no category, and "Hey - Men Shouting together - Jewish Wedding", one second
+ * long, is what reached a channel before either existed.
+ */
+const MIN_DURATION_MS = 30 * 1000;
+
+/**
+ * How many rows are asked for to return `limit` of them.
+ *
+ * More than `limit`, because rows get dropped for having no playable file or being a one
+ * second clip, and asking for exactly `limit` is how a five result ask quietly becomes
+ * three.
+ *
+ * Exported because the radio picks a page and has to know how big a page is. It computed
+ * pages as though one row fitted in each, so a seed with thirty eight results could be
+ * asked for page ten, find nothing, and end the radio. Caught by a live run, not by a test.
+ */
+function pageSizeFor(limit) {
+  return Math.min(limit * 4, 20);
+}
+
+/**
  * A result worth offering.
  *
  * Openverse returns rows with no playable `url` (the index knows about the work, not the
@@ -33,7 +58,10 @@ const MAX_DURATION_MS = 20 * 60 * 1000;
 function playable(row) {
   if (!row) return false;
   if (publicUrl(row.url) === null) return false;
-  if (typeof row.duration === 'number' && row.duration > MAX_DURATION_MS) return false;
+  if (typeof row.duration === 'number') {
+    if (row.duration > MAX_DURATION_MS) return false;
+    if (row.duration < MIN_DURATION_MS) return false;
+  }
   return true;
 }
 
@@ -77,15 +105,22 @@ function credit(track) {
  * `fetchImpl` is injected so the tests never touch the network, and so somebody running
  * this behind a proxy can hand in their own.
  */
-async function search(query, { fetchImpl = fetch, limit = 5, signal } = {}) {
+async function search(query, { fetchImpl = fetch, limit = 5, signal, page, withTotal } = {}) {
   const text = (query || '').trim();
-  if (!text) return [];
+  if (!text) return withTotal ? { tracks: [], total: 0 } : [];
 
   const url = new URL(ENDPOINT);
   url.searchParams.set('q', text);
   // Asked for more than we return: rows get dropped for having no playable file, and
   // asking for exactly `limit` would quietly return three results for a five result ask.
-  url.searchParams.set('page_size', String(Math.min(limit * 4, 20)));
+  url.searchParams.set('page_size', String(pageSizeFor(limit)));
+  // Music, as opposed to everything Openverse has heard. It indexes Freesound next to
+  // Jamendo, so without this a search for "lofi" returns a twelve second guitar scrap and
+  // a one second wedding shout among the actual tracks, and the first result wins.
+  url.searchParams.set('category', 'music');
+  // Only when asked for. The radio varies the page because Openverse has no "random", and
+  // spelling out page=1 everywhere else would be noise in every other request.
+  if (page && page > 1) url.searchParams.set('page', String(page));
 
   const res = await fetchImpl(url.toString(), {
     headers: {
@@ -99,7 +134,11 @@ async function search(query, { fetchImpl = fetch, limit = 5, signal } = {}) {
   if (!res.ok) throw new Error(`search failed: ${res.status}`);
   const body = await res.json();
   const rows = Array.isArray(body?.results) ? body.results : [];
-  return rows.filter(playable).slice(0, limit).map(toTrack);
+  const tracks = rows.filter(playable).slice(0, limit).map(toTrack);
+  // The radio needs to know how much there is before it can pick a page in it. Everybody
+  // else wants the tracks and nothing else, so the total is opt-in rather than a shape
+  // every caller has to unwrap.
+  return withTotal ? { tracks, total: body?.result_count ?? 0 } : tracks;
 }
 
-export { search, credit, playable, toTrack, ENDPOINT, MAX_DURATION_MS };
+export { search, credit, playable, toTrack, pageSizeFor, ENDPOINT, MAX_DURATION_MS, MIN_DURATION_MS };

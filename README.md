@@ -3,11 +3,16 @@
 Plays openly licensed music in a [Tusile](https://tusile.com) voice channel.
 
 ```
-/play query: lofi piano   channel: General
-/queue
-/skip
-/stop
+/play                      a radio: openly licensed music, shuffled, in the voice
+                           channel you are sitting in
+/play query: lofi piano    that, instead
+/radio station: jazz       one station, and stay on it
+/queue  /skip  /stop
 ```
+
+It plays where **you** are. The channel argument exists for queueing into a room you are
+about to walk into, and is otherwise the question nobody wanted asked: the answer was
+always "the one I am in".
 
 It searches [Openverse](https://openverse.org) for Creative Commons audio, queues what it
 finds, and streams it into the channel. Everything it plays is openly licensed, so it names
@@ -71,6 +76,8 @@ you fork this and take that out, you have made something you are not allowed to 
 | `addresses.js` | Which addresses the bot will be pointed at. Read this before you swap `search.js`. |
 | `stream.js` | Opens the connection with the address pinned, and hands ffmpeg the bytes. |
 | `queue.js` | What is playing and what is next. Pure, so the rules are tested without a network. |
+| `radio.js` | The stations, and which one and which page to ask for next. |
+| `stations.js` | Keeps each station's next batch in its pocket, so a radio starts in seconds. |
 | `decode.js` | ffmpeg: anything on the internet to the raw samples LiveKit takes. |
 | `player.js` | One voice channel, one room, one queue draining into it. |
 | `commands.js` | The five commands and what they say. |
@@ -90,6 +97,11 @@ was asked.
 **Fetch it yourself if the url is not yours.** A url from a search index is a request made
 from inside your network. Handing it to a tool that resolves the name again is a check you
 cannot enforce; resolving once, inside the socket's own lookup, is one you can.
+
+**Fetch what somebody will wait for before they ask.** Anonymous Openverse takes the
+better part of forty seconds to answer a query it has not seen, and the first version
+asked it while a person sat in an empty voice channel. The station list is fixed and known
+at startup, so that batch is fetched then. Measured cold: 37.4s before, 1.9s after.
 
 **Put the microphone down on every path out.** A bot left in a channel showing a live
 microphone and playing nothing is what people report as "the bot is broken". `hangUp` runs
@@ -122,7 +134,7 @@ checked against the hostname.
 npm test
 ```
 
-96 of them. All but one need no network and no ffmpeg; that one runs ffmpeg to check it understands the arguments this bot builds, because no test that reads an array of strings can tell a real option from an invented one, and this file shipped one that reads perfectly and does not exist. They also run during `docker build`, so an
+150 of them. All but one need no network and no ffmpeg; that one runs ffmpeg to check it understands the arguments this bot builds, because no test that reads an array of strings can tell a real option from an invented one, and this file shipped one that reads perfectly and does not exist. They also run during `docker build`, so an
 image cannot be built from code that does not pass.
 
 ## Licence

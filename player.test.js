@@ -226,3 +226,63 @@ test('queued audio is drained before hanging up', async () => {
   await settle(session);
   assert.ok(events.indexOf('drain') < events.indexOf('close'));
 });
+
+/**
+ * The radio keeps itself going.
+ *
+ * /play with no query is a session that must not stop when the queue runs dry: that is the
+ * whole feature. The refill is awaited inside the one pump loop rather than driven by a
+ * timer, so there is still exactly one thing feeding the room.
+ */
+test('a radio session asks for more when the queue runs out', async () => {
+  const { session, published } = harness({ frames: 1 });
+  let refills = 0;
+  session.radio = true;
+  session.refill = async () => {
+    refills += 1;
+    if (refills > 2) return false;
+    session.queue.add(track(`refill-${refills}`), 'radio');
+    return true;
+  };
+
+  await session.enqueue(track('first'), 'u1');
+  await settle(session);
+
+  assert.equal(refills, 3, 'it stopped asking, or never asked');
+  assert.equal(published.length, 3, 'the refilled tracks did not play');
+});
+
+// A refill that finds nothing ends the session rather than spinning on an empty queue.
+test('a radio that can find nothing stops instead of looping', async () => {
+  const { session, events } = harness({ frames: 1 });
+  session.radio = true;
+  session.refill = async () => false;
+
+  await session.enqueue(track(), 'u1');
+  await settle(session);
+  assert.ok(events.includes('leave:v1'));
+});
+
+// And a refill that throws is a network blip, not the end of the evening... but it must
+// not spin either. One failure ends it, with the reason logged.
+test('a refill that fails ends the session and says why', async () => {
+  const { session, events } = harness({ frames: 1 });
+  session.radio = true;
+  session.refill = async () => { throw new Error('openverse is down'); };
+
+  await session.enqueue(track(), 'u1');
+  await settle(session);
+  assert.ok(events.some((e) => e.includes('openverse is down')), events.join(' | '));
+  assert.ok(events.includes('leave:v1'));
+});
+
+test('a session that is not a radio still stops when the queue empties', async () => {
+  const { session, events } = harness({ frames: 1 });
+  let asked = false;
+  session.refill = async () => { asked = true; return true; };
+
+  await session.enqueue(track(), 'u1');
+  await settle(session);
+  assert.equal(asked, false, 'an ordinary session asked the radio for more');
+  assert.ok(events.includes('leave:v1'));
+});
