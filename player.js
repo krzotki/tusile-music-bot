@@ -104,9 +104,13 @@ class Session {
    * Returns the position, so the answer can be specific. The pump is deliberately not
    * awaited: /play has ten seconds to answer and a track runs for three minutes.
    */
-  async enqueue(track, requestedBy) {
+  async enqueue(track, requestedBy, { announced = false } = {}) {
     if (this.stopped) throw new Error('this session has ended');
     const position = this.queue.add(track, requestedBy);
+    // The caller answers "Now playing" itself when the track starts at once, so the player
+    // must not say it a second time. Behind somebody else it answers "Queued", and the
+    // player announces it when its turn comes.
+    if (announced && position <= 1) this.queue.waiting[this.queue.waiting.length - 1].announced = true;
     if (!this.running) {
       this.running = true;
       this.pump().catch((err) => this.log(`pump died: ${err.message}`));
@@ -156,7 +160,7 @@ class Session {
         }
         if (!entry) break;
         this.skipping = false;
-        if (this.announce) {
+        if (this.announce && !entry.announced) {
           // A failure to announce is not a reason to stop the music. The channel may have
           // been deleted, the bot may have lost permission to post in it: neither stops
           // the people in the voice channel hearing the track.

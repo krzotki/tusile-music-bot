@@ -339,3 +339,24 @@ test('a room that cannot count its listeners is never treated as empty', async (
   await settle(session);
   assert.equal(published.length, 400);
 });
+
+/**
+ * One "Now playing" per track.
+ *
+ * Since /play answers the channel, a track that started at once was announced twice: by the
+ * answer to /play and again by the player as it began (owner, 2026-10-18). The command says
+ * it when it can; the player says it for every track nobody has announced yet.
+ */
+test('a track the command already announced is not announced again', async () => {
+  const { session } = harness({ frames: 1 });
+  const announced = [];
+  session.announce = async (entry) => { announced.push(entry.track.title); };
+
+  const position = await session.enqueue(track('one'), 'u1', { announced: true });
+  await session.enqueue(track('two'), 'u1', { announced: true });
+  await settle(session);
+
+  assert.equal(position, 1);
+  // "two" was queued behind "one", so the answer said "Queued, number 2", not "Now playing".
+  assert.deepEqual(announced, ['two']);
+});

@@ -145,7 +145,7 @@ checked against the hostname.
 npm test
 ```
 
-186 of them. All but one need no network and no ffmpeg; that one runs ffmpeg to check it understands the arguments this bot builds, because no test that reads an array of strings can tell a real option from an invented one, and this file shipped one that reads perfectly and does not exist. They also run during `docker build`, so an
+188 of them. All but one need no network and no ffmpeg; that one runs ffmpeg to check it understands the arguments this bot builds, because no test that reads an array of strings can tell a real option from an invented one, and this file shipped one that reads perfectly and does not exist. They also run during `docker build`, so an
 image cannot be built from code that does not pass.
 
 ## Licence

@@ -166,7 +166,8 @@ async function runPlay(options, ctx) {
   let position;
   try {
     const session = ctx.sessionFor(channelId);
-    position = await session.enqueue(track, ctx.userId);
+    // This answer says "Now playing" itself when the track starts at once.
+    position = await session.enqueue(track, ctx.userId, { announced: true });
   } catch (err) {
     await tell(ctx, ctx.update(`I could not queue that: ${err.message}`));
     return;

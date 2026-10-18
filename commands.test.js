@@ -525,3 +525,12 @@ test('a station nobody offers is refused privately, without a defer', async () =
   assert.equal(res?.type, 'ephemeral');
   assert.equal(said.some((s) => s.defer), false);
 });
+
+test('play tells the player it already said "Now playing" only when it did', async () => {
+  const { ctx, session } = ctxWith();
+  const seen = [];
+  session.enqueue = async (t, by, opts) => { seen.push(opts); return seen.length; };
+  await handle({ command: 'play', options: { query: 'lofi', channel: 'v1' } }, ctx);
+  await handle({ command: 'play', options: { query: 'lofi', channel: 'v1' } }, ctx);
+  assert.deepEqual(seen, [{ announced: true }, { announced: true }]);
+});
