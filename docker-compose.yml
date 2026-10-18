@@ -23,6 +23,10 @@ services:
       # mapping value and makes compose refuse to parse the file at all.
       BOT_KEY: "${BOT_KEY:?create a bot in Settings, Bots and set BOT_KEY}"
       BOT_SECRET: "${BOT_SECRET:?BOT_SECRET is shown once, when the bot is created}"
+      # Optional. A free Jamendo client id (devportal.jamendo.com) adds Jamendo as the
+      # first fallback when Openverse refuses this box; without one the bot falls back to
+      # ccMixter alone.
+      JAMENDO_CLIENT_ID: "${JAMENDO_CLIENT_ID:-}"
     # No ports and no EXPOSE. The bot dials out; nothing ever connects to it.
     #
     # Its log is capped: a bot that cannot reach Core logs every retry, and an unbounded

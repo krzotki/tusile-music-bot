@@ -12,14 +12,17 @@ import { FRAME_BYTES } from './decode.js';
  * audio: who hangs up, when, and what happens to the queue when something fails halfway.
  * None of that needs a real room, and all of it needs to be checked.
  */
-function harness({ frames = 5, exitCode = 0 } = {}) {
+function harness({ frames = 5, exitCode = 0, listeners } = {}) {
   const published = [];
   const events = [];
+  // A clock that moves 10 ms per published frame, as the real one does.
+  let clock = 0;
   const room = {
+    listeners,
     // Paced, like the real one. captureFrame returns when the source is ready for the next
     // 10 ms, which makes it the clock as well as the transport: a fake that resolves
     // immediately drains a whole track in microtasks and nothing can be observed mid play.
-    publish: (s) => new Promise((r) => { published.push(s); setImmediate(r); }),
+    publish: (s) => new Promise((r) => { published.push(s); clock += 10; setImmediate(r); }),
     drain: async () => events.push('drain'),
     close: async () => events.push('close'),
   };
@@ -48,6 +51,7 @@ function harness({ frames = 5, exitCode = 0 } = {}) {
       return body;
     },
     sleep: async () => {},
+    now: () => clock,
   });
   return { session, published, events };
 }
@@ -285,4 +289,53 @@ test('a session that is not a radio still stops when the queue empties', async (
   await settle(session);
   assert.equal(asked, false, 'an ordinary session asked the radio for more');
   assert.ok(events.includes('leave:v1'));
+});
+
+/**
+ * Nobody left to hear it.
+ *
+ * The bot played to an empty channel for as long as the radio could find tracks, which is
+ * forever: a room held open, a track fetched every few minutes, and a bot sitting in a
+ * channel with nobody in it (owner, 2026-10-17). It leaves once no person has been there
+ * for the grace period. Other bots do not count as an audience.
+ */
+test('an empty channel is left once the grace period passes', async () => {
+  const { session, events } = harness({ frames: 400, listeners: () => 0 });
+  session.emptyGraceMs = 1000;
+  session.radio = true;
+  session.refill = async () => { session.queue.add(track('more'), 'radio'); return true; };
+  await session.enqueue(track(), 'u1');
+  await settle(session);
+
+  assert.equal(session.stopped, true, 'it kept playing to nobody');
+  assert.ok(events.includes('leave:v1'));
+  assert.ok(events.some((e) => /nobody|empty/i.test(e)), 'it did not say why it left');
+});
+
+test('somebody listening keeps it playing', async () => {
+  const { session, published } = harness({ frames: 400, listeners: () => 1 });
+  session.emptyGraceMs = 1000;
+  await session.enqueue(track(), 'u1');
+  await settle(session);
+  assert.equal(published.length, 400);
+  assert.equal(session.stopped, false);
+});
+
+test('a moment alone is not leaving: someone back within the grace keeps it', async () => {
+  let n = 0;
+  // Empty at one check (counted once a second), somebody back at the next.
+  const { session, published } = harness({ frames: 400, listeners: () => (n++ < 1 ? 0 : 1) });
+  session.emptyGraceMs = 1000;
+  await session.enqueue(track(), 'u1');
+  await settle(session);
+  assert.equal(published.length, 400);
+  assert.equal(session.stopped, false);
+});
+
+test('a room that cannot count its listeners is never treated as empty', async () => {
+  const { session, published } = harness({ frames: 400 });
+  session.emptyGraceMs = 0;
+  await session.enqueue(track(), 'u1');
+  await settle(session);
+  assert.equal(published.length, 400);
 });

@@ -38,6 +38,18 @@ const TAIL_MS = 400;
  */
 const MAX_FRAMES = 25 * 60 * 100;
 
+/**
+ * How long a channel may be empty before the bot leaves it.
+ *
+ * It used to play to an empty channel for as long as the radio found tracks, which is
+ * forever (owner, 2026-10-17). Not at once: somebody whose connection blinks, or who hops
+ * channels and back, should find the music still on.
+ */
+const EMPTY_GRACE_MS = 30_000;
+
+/** Listeners are counted once a second of audio, not every 10 ms frame. */
+const LISTENER_CHECK_FRAMES = 100;
+
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class Session {
@@ -51,7 +63,7 @@ class Session {
    * @param {(track: object) => Promise<void>} [deps.announce] called as each track starts
    */
   constructor({ server, channelId, log, connect, spawn, announce, openStream,
-    sleep = defaultSleep }) {
+    sleep = defaultSleep, now = Date.now }) {
     this.server = server;
     this.channelId = channelId;
     this.log = log;
@@ -72,6 +84,10 @@ class Session {
     this.radio = false;
     this.refill = null;
     this.maxFrames = MAX_FRAMES;
+    this.now = now;
+    this.emptyGraceMs = EMPTY_GRACE_MS;
+    /** When the channel was last seen with nobody in it, or null while somebody is. */
+    this.emptySince = null;
 
     this.queue = new Queue();
     this.room = null;
@@ -125,6 +141,7 @@ class Session {
       await this.sleep(LEAD_IN_MS);
 
       while (!this.stopped) {
+        if (this.leaveIfAlone()) break;
         let entry = this.queue.next();
         if (!entry && this.radio && this.refill) {
           // Awaited inside the one pump loop rather than driven by a timer, so there is
@@ -172,6 +189,7 @@ class Session {
         onError: (err) => this.log(`ffmpeg: ${track.title}: ${err.message}`),
       })) {
         if (this.skipping || this.stopped) break;
+        if (frames % LISTENER_CHECK_FRAMES === 0 && this.leaveIfAlone()) break;
         await this.room.publish(samples);
         frames += 1;
         if (frames >= this.maxFrames) {
@@ -186,6 +204,29 @@ class Session {
     if (frames === 0 && !this.skipping && !this.stopped) {
       this.log(`${track.title} produced no audio (${track.url})`);
     }
+  }
+
+  /**
+   * Whether nobody has been listening for the whole grace period, in which case the
+   * session is stopped. The pump hangs up on its way out.
+   *
+   * A room that cannot count (no `listeners`) is never empty: leaving people mid song on a
+   * guess is worse than staying.
+   */
+  leaveIfAlone() {
+    const count = this.room?.listeners?.();
+    if (typeof count !== 'number' || count > 0) {
+      this.emptySince = null;
+      return false;
+    }
+    const now = this.now();
+    if (this.emptySince === null) this.emptySince = now;
+    if (now - this.emptySince < this.emptyGraceMs) return false;
+    this.log('nobody is listening any more, so the music stopped and the bot left');
+    this.stopped = true;
+    this.skipping = true;
+    this.queue.clear();
+    return true;
   }
 
   /** Tell the community the bot is in the channel, then open the room. */
@@ -237,7 +278,16 @@ async function connectToRoom(url, token) {
     // it the end of the last track is dropped on disconnect.
     drain: () => source.waitForPlayout(),
     close: () => room.disconnect(),
+    // People in the channel. Other bots are not an audience: two of them would otherwise
+    // keep each other playing in an empty room all night.
+    listeners: () => {
+      let n = 0;
+      for (const p of room.remoteParticipants.values()) {
+        if (!String(p.identity ?? '').startsWith('bot:')) n += 1;
+      }
+      return n;
+    },
   };
 }
 
-export { Session, connectToRoom, LEAD_IN_MS, TAIL_MS, MAX_FRAMES };
+export { Session, connectToRoom, LEAD_IN_MS, TAIL_MS, MAX_FRAMES, EMPTY_GRACE_MS };

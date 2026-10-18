@@ -119,6 +119,27 @@ test('a redirect is followed, and its destination judged the same way', async ()
   assert.equal(calls[1].hostname, 'cdn2.example.com');
 });
 
+/**
+ * ccMixter answers 403 "Forbidden" to a request for an mp3 that carries no Referer, which
+ * is hotlink protection rather than a block: measured, the same request with a Referer of
+ * ccmixter.org answers 206. Each hop names its own origin, so nothing about where the
+ * previous hop was leaks to the next host, and the checks on every hop are untouched.
+ */
+test('each hop names its own origin as the referer', async () => {
+  const { impl, calls } = fakeRequest({
+    responses: [
+      { statusCode: 302, headers: { location: 'https://cdn2.example.com/real.mp3' } },
+      { statusCode: 200 },
+    ],
+  });
+  await openAudioStream('https://ccmixter.org/content/a/a.mp3', {
+    requestImpl: impl,
+    lookup: publicAnswer,
+  });
+  assert.equal(calls[0].headers.Referer, 'https://ccmixter.org/');
+  assert.equal(calls[1].headers.Referer, 'https://cdn2.example.com/');
+});
+
 test('a redirect pointing inside the network is refused', async () => {
   const { impl } = fakeRequest({
     responses: [{ statusCode: 302, headers: { location: 'http://169.254.169.254/' } }],

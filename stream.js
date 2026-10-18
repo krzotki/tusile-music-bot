@@ -112,6 +112,10 @@ async function openAudioStream(raw, { requestImpl, lookup, maxHops = MAX_HOPS, s
           headers: {
             'User-Agent': 'tusile-music-bot (https://github.com/krzotki/tusile-music-bot)',
             Accept: '*/*',
+            // This hop's own origin, never the previous hop's, so nothing about where the
+            // request came from reaches the next host. ccMixter's mp3s answer 403 to a
+            // request with no Referer at all (hotlink protection, measured); with one, 206.
+            Referer: `${url.origin}/`,
           },
         },
         ok,

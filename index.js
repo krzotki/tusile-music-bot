@@ -1,13 +1,14 @@
 /**
  * A music bot for Tusile, and an example of writing one.
  *
- * It searches Openverse for openly licensed music, queues what it finds, and plays it into
+ * It searches Openverse for openly licensed music (Jamendo and ccMixter when Openverse will
+ * not answer), queues what it finds, and plays it into
  * a voice channel. Everything it can play is Creative Commons, which is the point: a music
  * bot you can actually run and share without a takedown notice, and a worked example of the
  * parts of the bot API that are hard to find your way around from the docs alone, which are
  * voice and deferred interactions.
  *
- * Configure with CORE_SERVER_URL, BOT_KEY and BOT_SECRET. Nothing else. ffmpeg has to be on
+ * Configure with CORE_SERVER_URL, BOT_KEY and BOT_SECRET, and optionally JAMENDO_CLIENT_ID. ffmpeg has to be on
  * the path; the Dockerfile puts it there.
  *
  * https://github.com/krzotki/tusile-music-bot

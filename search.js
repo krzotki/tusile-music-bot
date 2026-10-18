@@ -1,91 +1,37 @@
 /**
  * Finding something to play.
  *
- * Openverse (openverse.org, run by the WordPress Foundation) indexes openly licensed audio
- * from Jamendo, Freesound, ccMixter and Wikimedia and hands back a direct link to the file.
- * It is the one music search worth building an example on: no account, no API key, no
- * billing page between somebody cloning this repo and hearing a sound. Every other free
- * music API wants a client id first.
+ * Three sources, asked in order until one has something:
  *
- * Nothing here is Tusile-specific. Swap this file for Jamendo, your own library, or a
- * folder of files on disk, keep the shape `search` returns, and the rest of the bot does
- * not notice.
+ * 1. Openverse (openverse.js). No account, no API key, and it indexes Jamendo, Freesound,
+ *    ccMixter and Wikimedia together. When it answers, nothing else is asked.
+ * 2. Jamendo (jamendo.js), only when JAMENDO_CLIENT_ID is set.
+ * 3. ccMixter (ccmixter.js). No key.
+ *
+ * Why there is a chain at all, measured 2026-10-18: from the production boxes every
+ * Openverse endpoint answers 403 with a Cloudflare "Just a moment..." page, whatever the
+ * User-Agent, while a home connection gets 200. With Openverse alone every /play found
+ * nothing and the log said "stations warmed: 0 of 18". Jamendo and ccMixter both answer
+ * from the same box.
+ *
+ * A source falls through to the next when it fails (unreachable, an error status, a body
+ * that is not the JSON it serves) or has nothing for the query. A source that refused us
+ * is skipped for SKIP_MS, so a blocked Openverse is not a 403 in front of every answer,
+ * and asked again after that, because a block can lift.
+ *
+ * Nothing here is Tusile-specific. Swap a source for your own library or a folder of files
+ * on disk, keep the shape `toTrack` returns, and the rest of the bot does not notice.
  */
 
-import { publicUrl } from './addresses.js';
+import { openverse, playable, toTrack, ENDPOINT } from './openverse.js';
+import { jamendo } from './jamendo.js';
+import { ccmixter } from './ccmixter.js';
+import { MAX_DURATION_MS, MIN_DURATION_MS, pageSizeFor } from './tracks.js';
 
-const ENDPOINT = 'https://api.openverse.org/v1/audio/';
+/** How long a source that refused us is left alone. */
+const SKIP_MS = 30 * 60 * 1000;
 
-/**
- * Anything longer than this is almost certainly a DJ set or a twelve hour sleep loop, and
- * queueing one by accident means nobody else gets a turn until somebody runs /skip.
- */
-const MAX_DURATION_MS = 20 * 60 * 1000;
-
-/**
- * And anything shorter than this is not a track.
- *
- * Openverse indexes Freesound alongside Jamendo, and Freesound is sound effects. Asking
- * for `category=music` is the first line of defence and the better one, but a row can
- * simply have no category, and "Hey - Men Shouting together - Jewish Wedding", one second
- * long, is what reached a channel before either existed.
- */
-const MIN_DURATION_MS = 30 * 1000;
-
-/**
- * How many rows are asked for to return `limit` of them.
- *
- * More than `limit`, because rows get dropped for having no playable file or being a one
- * second clip, and asking for exactly `limit` is how a five result ask quietly becomes
- * three.
- *
- * Exported because the radio picks a page and has to know how big a page is. It computed
- * pages as though one row fitted in each, so a seed with thirty eight results could be
- * asked for page ten, find nothing, and end the radio. Caught by a live run, not by a test.
- */
-function pageSizeFor(limit) {
-  return Math.min(limit * 4, 20);
-}
-
-/**
- * A result worth offering.
- *
- * Openverse returns rows with no playable `url` (the index knows about the work, not the
- * file), and rows whose duration it never learned. A missing duration is kept: plenty of
- * Freesound entries have none and play perfectly. A missing url is not, because the only
- * thing the bot could do with one is fail after announcing it.
- */
-function playable(row) {
-  if (!row) return false;
-  if (publicUrl(row.url) === null) return false;
-  if (typeof row.duration === 'number') {
-    if (row.duration > MAX_DURATION_MS) return false;
-    if (row.duration < MIN_DURATION_MS) return false;
-  }
-  return true;
-}
-
-/**
- * One search result, in the only shape the rest of the bot knows about.
- *
- * `licence` and `attribution` are not decoration. Every track here is under a Creative
- * Commons licence, and all of them except CC0 require credit to be given wherever the work
- * is used. A bot that plays the audio and says nothing is the part of this example that
- * would be wrong to copy, so the credit is built into the type rather than left to the
- * command to remember.
- */
-function toTrack(row) {
-  return {
-    title: (row.title || 'Untitled').trim(),
-    artist: (row.creator || 'Unknown artist').trim(),
-    url: publicUrl(row.url),
-    durationMs: typeof row.duration === 'number' ? row.duration : null,
-    licence: (row.license || '').toUpperCase(),
-    licenceUrl: row.license_url || null,
-    pageUrl: row.foreign_landing_url || null,
-    source: row.provider || 'openverse',
-  };
-}
+const PROVIDERS = [openverse, jamendo, ccmixter];
 
 /**
  * The line that gives credit, in the form the licences ask for: title, creator, licence.
@@ -99,46 +45,79 @@ function credit(track) {
   return parts.join(' | ');
 }
 
-/**
- * Search for something to play.
- *
- * `fetchImpl` is injected so the tests never touch the network, and so somebody running
- * this behind a proxy can hand in their own.
- */
-async function search(query, { fetchImpl = fetch, limit = 5, signal, page, withTotal } = {}) {
-  const text = (query || '').trim();
-  if (!text) return withTotal ? { tracks: [], total: 0 } : [];
-
-  const url = new URL(ENDPOINT);
-  url.searchParams.set('q', text);
-  // Asked for more than we return: rows get dropped for having no playable file, and
-  // asking for exactly `limit` would quietly return three results for a five result ask.
-  url.searchParams.set('page_size', String(pageSizeFor(limit)));
-  // Music, as opposed to everything Openverse has heard. It indexes Freesound next to
-  // Jamendo, so without this a search for "lofi" returns a twelve second guitar scrap and
-  // a one second wedding shout among the actual tracks, and the first result wins.
-  url.searchParams.set('category', 'music');
-  // Only when asked for. The radio varies the page because Openverse has no "random", and
-  // spelling out page=1 everywhere else would be noise in every other request.
-  if (page && page > 1) url.searchParams.set('page', String(page));
-
-  const res = await fetchImpl(url.toString(), {
-    headers: {
-      // Openverse asks anonymous callers to identify themselves, and throttles harder
-      // when they do not.
-      'User-Agent': 'tusile-music-bot (https://github.com/krzotki/tusile-music-bot)',
-      Accept: 'application/json',
-    },
-    signal,
-  });
-  if (!res.ok) throw new Error(`search failed: ${res.status}`);
-  const body = await res.json();
-  const rows = Array.isArray(body?.results) ? body.results : [];
-  const tracks = rows.filter(playable).slice(0, limit).map(toTrack);
-  // The radio needs to know how much there is before it can pick a page in it. Everybody
-  // else wants the tracks and nothing else, so the total is opt-in rather than a shape
-  // every caller has to unwrap.
-  return withTotal ? { tracks, total: body?.result_count ?? 0 } : tracks;
+function defaultLog(line) {
+  console.log(new Date().toISOString(), line);
 }
 
-export { search, credit, playable, toTrack, pageSizeFor, ENDPOINT, MAX_DURATION_MS, MIN_DURATION_MS };
+/**
+ * A search with its own memory of which sources have refused it.
+ *
+ * The bot uses one, `search` below. Tests make their own so one test's blocked Openverse
+ * is not the next test's.
+ */
+function createSearch({ providers = PROVIDERS, now = Date.now, log = defaultLog, skipMs = SKIP_MS } = {}) {
+  /** source name -> the time it may be asked again. */
+  const skipUntil = new Map();
+
+  /**
+   * Search for something to play.
+   *
+   * `fetchImpl` is injected so the tests never touch the network, and so somebody running
+   * this behind a proxy can hand in their own. `env` is where JAMENDO_CLIENT_ID is read.
+   *
+   * `page` counts in pages of `pageSizeFor(limit)` rows, and `withTotal` answers how many
+   * rows there are, for every source alike, so the radio can pick a page without knowing
+   * which source it is talking to.
+   */
+  return async function search(query, {
+    fetchImpl = fetch, limit = 5, signal, page, withTotal, env = process.env,
+  } = {}) {
+    const text = (query || '').trim();
+    if (!text) return withTotal ? { tracks: [], total: 0 } : [];
+
+    const reasons = [];
+    let answered = null;
+    for (const provider of providers) {
+      if (!provider.enabled(env)) continue;
+      const until = skipUntil.get(provider.name) ?? 0;
+      if (until > now()) {
+        reasons.push(`${provider.name} skipped until ${new Date(until).toISOString()}`);
+        continue;
+      }
+      try {
+        const out = await provider.query({ text, limit, page, withTotal, fetchImpl, signal, env });
+        skipUntil.delete(provider.name);
+        if (out.tracks.length > 0) return withTotal ? out : out.tracks;
+        answered = answered ?? out;
+      } catch (err) {
+        // An abort is the caller giving up, not the source failing: nobody else is asked.
+        if (signal?.aborted) throw err;
+        reasons.push(err.message);
+        if (err.blocked) {
+          skipUntil.set(provider.name, now() + skipMs);
+          log(`search: ${err.message}; skipping ${provider.name} for ${Math.round(skipMs / 60000)} minutes`);
+        }
+      }
+    }
+
+    // Somebody answered and had nothing: that is no results, not a failure.
+    if (answered) return withTotal ? { tracks: [], total: 0 } : [];
+    throw new Error(`search failed: ${reasons.join('; ') || 'no source configured'}`);
+  };
+}
+
+/** The search the bot uses. One memory for the whole process. */
+const search = createSearch();
+
+export {
+  search,
+  createSearch,
+  credit,
+  playable,
+  toTrack,
+  pageSizeFor,
+  ENDPOINT,
+  MAX_DURATION_MS,
+  MIN_DURATION_MS,
+  SKIP_MS,
+};
